@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Password Strength Analyzer</title>
+<style>
+  :root {
+    --bg: #0f1a1c;
+    --panel: #172629;
+    --line: #2a4044;
+    --text: #e8f1f2;
+    --muted: #8fa9ad;
+    --weak: #ff6b6b;
+    --fair: #ffb84d;
+    --good: #7fd6a0;
+    --strong: #3fe0c5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif; display: flex; justify-content: center; padding: 24px 16px;
+  }
+  main { width: 100%; max-width: 520px; }
+  h1 { font-size: 1.6rem; margin: 8px 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; line-height: 1.5; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+  .field { display: flex; gap: 8px; }
+  input[type=password], input[type=text] {
+    flex: 1; padding: 12px; font-size: 1rem; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--text); min-width: 0;
+  }
+  input:focus, button:focus-visible { outline: 2px solid var(--strong); }
+  button {
+    padding: 0 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg);
+    color: var(--text); cursor: pointer; font-size: .9rem;
+  }
+  .bar { height: 10px; background: var(--bg); border-radius: 6px; margin-top: 14px; overflow: hidden; }
+  .fill { height: 100%; width: 0; background: var(--weak); transition: width .25s, background .25s; }
+  .row { display: flex; justify-content: space-between; margin-top: 10px; font-size: .95rem; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { padding: 6px 0; color: var(--muted); }
+  li.ok { color: var(--good); }
+  li.ok::before { content: "✔ "; }
+  li.no::before { content: "✘ "; color: var(--weak); }
+  h2 { font-size: 1rem; margin: 0 0 8px; }
+  .tip { color: var(--muted); font-size: .9rem; line-height: 1.5; }
+  .gen { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+  code { word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Password Strength Analyzer</h1>
+  <p class="sub">Checks a password on your device only. Nothing is sent or stored anywhere.</p>
+
+  <div class="box">
+    <div class="field">
+      <input id="pw" type="password" placeholder="Type a password" autocomplete="off" aria-label="Password">
+      <button id="toggle" type="button">Show</button>
+    </div>
+    <div class="bar"><div id="fill" class="fill"></div></div>
+    <div class="row"><span id="label">Enter a password</span><span id="crack"></span></div>
+  </div>
+
+  <div class="box">
+    <h2>Checks</h2>
+    <ul id="checks"></ul>
+  </div>
+
+  <div class="box">
+    <h2>Generate a strong password</h2>
+    <div class="gen">
+      <button id="gen" type="button" style="padding:10px 14px">Generate</button>
+      <code id="out">-</code>
+    </div>
+    <p class="tip">Uses the browser's secure random generator (crypto.getRandomValues).</p>
+  </div>
+</main>
+
+<script>
+  // Small list of very common passwords to reject (a real tool would use a bigger list)
+  const COMMON = ["password","123456","12345678","qwerty","abc123","admin","welcome",
+    "letmein","iloveyou","password1","111111","123123","india123","tamilnadu"];
+
+  const rules = [
+    { text: "At least 12 characters", test: p => p.length >= 12 },
+    { text: "Has lowercase letters",  test: p => /[a-z]/.test(p) },
+    { text: "Has uppercase letters",  test: p => /[A-Z]/.test(p) },
+    { text: "Has numbers",            test: p => /\d/.test(p) },
+    { text: "Has symbols (!@#$...)",  test: p => /[^A-Za-z0-9]/.test(p) },
+    { text: "Not a common password",  test: p => p.length > 0 && !COMMON.some(c => p.toLowerCase().includes(c)) },
+    { text: "No 3 repeated characters in a row", test: p => p.length > 0 && !/(.)\1\1/.test(p) }
+  ];
+
+  const pw = document.getElementById("pw");
+  const fill = document.getElementById("fill");
+  const label = document.getElementById("label");
+  const crack = document.getElementById("crack");
+  const checks = document.getElementById("checks");
+
+  // Entropy = length x log2(character pool size)
+  function entropy(p) {
+    let pool = 0;
+    if (/[a-z]/.test(p)) pool += 26;
+    if (/[A-Z]/.test(p)) pool += 26;
+    if (/\d/.test(p)) pool += 10;
+    if (/[^A-Za-z0-9]/.test(p)) pool += 32;
+    return pool ? p.length * Math.log2(pool) : 0;
+  }
+
+  // Assumes an attacker making 10 billion guesses per second
+  function crackTime(bits) {
+    const seconds = Math.pow(2, bits) / 1e10 / 2;
+    if (seconds < 1) return "instantly";
+    const units = [["years", 31557600], ["days", 86400], ["hours", 3600], ["minutes", 60], ["seconds", 1]];
+    if (seconds > 31557600 * 1e9) return "billions of years+";
+    for (const [name, size] of units) {
+      if (seconds >= size) return Math.round(seconds / size).toLocaleString() + " " + name;
+    }
+  }
+
+  function update() {
+    const p = pw.value;
+    checks.innerHTML = "";
+    let passed = 0;
+    rules.forEach(r => {
+      const ok = r.test(p);
+      if (ok) passed++;
+      const li = document.createElement("li");
+      li.className = ok ? "ok" : "no";
+      li.textContent = r.text;
+      checks.appendChild(li);
+    });
+
+    if (!p) { fill.style.width = "0"; label.textContent = "Enter a password"; crack.textContent = ""; return; }
+
+    const bits = entropy(p);
+    let level = ["Weak", "var(--weak)", 25];
+    if (passed >= 4 && bits >= 40) level = ["Fair", "var(--fair)", 50];
+    if (passed >= 6 && bits >= 60) level = ["Good", "var(--good)", 75];
+    if (passed === rules.length && bits >= 75) level = ["Strong", "var(--strong)", 100];
+    if (!rules[5].test(p)) level = ["Weak", "var(--weak)", 15];
+
+    fill.style.width = level[2] + "%";
+    fill.style.background = level[1];
+    label.textContent = level[0] + " (" + Math.round(bits) + " bits)";
+    crack.textContent = "Crack time: " + crackTime(bits);
+  }
+
+  document.getElementById("toggle").addEventListener("click", e => {
+    const hidden = pw.type === "password";
+    pw.type = hidden ? "text" : "password";
+    e.target.textContent = hidden ? "Hide" : "Show";
+  });
+
+  document.getElementById("gen").addEventListener("click", () => {
+    const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*";
+    const arr = new Uint32Array(16);
+    crypto.getRandomValues(arr);
+    const result = Array.from(arr, n => chars[n % chars.length]).join("");
+    document.getElementById("out").textContent = result;
+    pw.value = result;
+    update();
+  });
+
+  pw.addEventListener("input", update);
+  update();
+</script>
+</body>
+</html>
